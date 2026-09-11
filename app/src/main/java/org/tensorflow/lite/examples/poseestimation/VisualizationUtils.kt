@@ -63,7 +63,8 @@ object VisualizationUtils {
     fun drawBodyKeypoints(
         input: Bitmap,
         persons: List<Person>,
-        isTrackerEnabled: Boolean = false
+        isTrackerEnabled: Boolean = false,
+        targetBitmap: Bitmap? = null
     ): Bitmap {
         val paintCircle = Paint().apply {
             strokeWidth = CIRCLE_RADIUS
@@ -82,7 +83,13 @@ object VisualizationUtils {
             textAlign = Paint.Align.LEFT
         }
 
-        val output = input.copy(Bitmap.Config.ARGB_8888, true)
+        val output = if (targetBitmap != null && targetBitmap.width == input.width && targetBitmap.height == input.height && targetBitmap.isMutable) {
+            val canvas = Canvas(targetBitmap)
+            canvas.drawBitmap(input, 0f, 0f, null)
+            targetBitmap
+        } else {
+            input.copy(Bitmap.Config.ARGB_8888, true)
+        }
         val originalSizeCanvas = Canvas(output)
         persons.forEach { person ->
             // draw person id if tracker is enable

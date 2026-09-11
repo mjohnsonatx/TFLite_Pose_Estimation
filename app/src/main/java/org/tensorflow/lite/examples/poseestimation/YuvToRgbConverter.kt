@@ -5,147 +5,185 @@ import android.graphics.Bitmap
 import android.graphics.ImageFormat
 import android.graphics.Rect
 import android.media.Image
-import android.renderscript.Allocation
-import android.renderscript.Element
-import android.renderscript.RenderScript
-import android.renderscript.ScriptIntrinsicYuvToRGB
 import java.nio.ByteBuffer
 
-class YuvToRgbConverter(context: Context) {
-    private val rs = RenderScript.create(context)
-    private val scriptYuvToRgb = ScriptIntrinsicYuvToRGB.create(rs, Element.U8_4(rs))
+/**
+ * Encapsulates the buffer and strides of a single image plane for YUV conversion.
+ */
+data class PlaneData(
+    val buffer: ByteBuffer,
+    val rowStride: Int,
+    val pixelStride: Int,
+    val bufferOffset: Int = buffer.position()
+)
 
-    private var pixelCount: Int = -1
-    private lateinit var yuvBuffer: ByteBuffer
-    private lateinit var inputAllocation: Allocation
-    private lateinit var outputAllocation: Allocation
+/**
+ * Pure math and pixel transformation utilities for limited-range BT.601 YUV_420_888 to RGB conversion.
+ */
+object YuvMath {
 
-    @Synchronized
-    fun yuvToRgb(image: Image, output: Bitmap) {
+    /**
+     * Converts a single Y, U, V unsigned byte tuple (0..255) to an opaque ARGB-8888 Int.
+     * Uses limited-range BT.601 integer math.
+     */
+    fun yuvToRgbPixel(y: Int, u: Int, v: Int): Int {
+        val c = if (y - 16 > 0) y - 16 else 0
+        val d = u - 128
+        val e = v - 128
 
-        // Ensure that the intermediate output byte buffer is allocated
-        if (!::yuvBuffer.isInitialized) {
-            pixelCount = image.cropRect.width() * image.cropRect.height()
-            yuvBuffer = ByteBuffer.allocateDirect(
-                pixelCount * ImageFormat.getBitsPerPixel(ImageFormat.YUV_420_888) / 8)
-        }
+        var r = (298 * c + 409 * e + 128) shr 8
+        var g = (298 * c - 100 * d - 208 * e + 128) shr 8
+        var b = (298 * c + 516 * d + 128) shr 8
 
-        // Get the YUV data in byte array form
-        imageToByteBuffer(image, yuvBuffer)
+        if (r < 0) r = 0 else if (r > 255) r = 255
+        if (g < 0) g = 0 else if (g > 255) g = 255
+        if (b < 0) b = 0 else if (b > 255) b = 255
 
-        // Ensure that the RenderScript inputs and outputs are allocated
-        if (!::inputAllocation.isInitialized) {
-            inputAllocation = Allocation.createSized(rs, Element.U8(rs), yuvBuffer.array().size)
-        }
-        if (!::outputAllocation.isInitialized) {
-            outputAllocation = Allocation.createFromBitmap(rs, output)
-        }
-
-        // Convert YUV to RGB
-        inputAllocation.copyFrom(yuvBuffer.array())
-        scriptYuvToRgb.setInput(inputAllocation)
-        scriptYuvToRgb.forEach(outputAllocation)
-        outputAllocation.copyTo(output)
+        return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
     }
 
-    private fun imageToByteBuffer(image: Image, outputBuffer: ByteBuffer) {
-        assert(image.format == ImageFormat.YUV_420_888)
+    /**
+     * Converts YUV planes with crop and optional right-angle rotation into an ARGB IntArray.
+     */
+    fun convertYuvToArgb(
+        yPlane: PlaneData,
+        uPlane: PlaneData,
+        vPlane: PlaneData,
+        cropLeft: Int,
+        cropTop: Int,
+        cropRight: Int,
+        cropBottom: Int,
+        outArgb: IntArray,
+        rotationDegrees: Int = 0
+    ) {
+        val cropWidth = cropRight - cropLeft
+        val cropHeight = cropBottom - cropTop
+        if (cropWidth <= 0 || cropHeight <= 0) return
 
-        val imageCrop = image.cropRect
-        val imagePlanes = image.planes
-        val rowData = ByteArray(imagePlanes.first().rowStride)
+        val normalizedRotation = ((rotationDegrees % 360) + 360) % 360
+        val outWidth = if (normalizedRotation == 90 || normalizedRotation == 270) cropHeight else cropWidth
+        val outHeight = if (normalizedRotation == 90 || normalizedRotation == 270) cropWidth else cropHeight
 
-        imagePlanes.forEachIndexed { planeIndex, plane ->
+        require(outArgb.size >= outWidth * outHeight) {
+            "outArgb buffer too small: required ${outWidth * outHeight}, got ${outArgb.size}"
+        }
 
-            // How many values are read in input for each output value written
-            // Only the Y plane has a value for every pixel, U and V have half the resolution i.e.
-            //
-            // Y Plane            U Plane    V Plane
-            // ===============    =======    =======
-            // Y Y Y Y Y Y Y Y    U U U U    V V V V
-            // Y Y Y Y Y Y Y Y    U U U U    V V V V
-            // Y Y Y Y Y Y Y Y    U U U U    V V V V
-            // Y Y Y Y Y Y Y Y    U U U U    V V V V
-            // Y Y Y Y Y Y Y Y
-            // Y Y Y Y Y Y Y Y
-            // Y Y Y Y Y Y Y Y
-            val outputStride: Int
+        val yBuf = yPlane.buffer
+        val uBuf = uPlane.buffer
+        val vBuf = vPlane.buffer
 
-            // The index in the output buffer the next value will be written at
-            // For Y it's zero, for U and V we start at the end of Y and interleave them i.e.
-            //
-            // First chunk        Second chunk
-            // ===============    ===============
-            // Y Y Y Y Y Y Y Y    U V U V U V U V
-            // Y Y Y Y Y Y Y Y    U V U V U V U V
-            // Y Y Y Y Y Y Y Y    U V U V U V U V
-            // Y Y Y Y Y Y Y Y    U V U V U V U V
-            // Y Y Y Y Y Y Y Y
-            // Y Y Y Y Y Y Y Y
-            // Y Y Y Y Y Y Y Y
-            var outputOffset: Int
+        val yRowStride = yPlane.rowStride
+        val yPixelStride = yPlane.pixelStride
+        val yOffset = yPlane.bufferOffset
 
-            when (planeIndex) {
-                0 -> {
-                    outputStride = 1
-                    outputOffset = 0
-                }
-                1 -> {
-                    outputStride = 2
-                    outputOffset = pixelCount + 1
-                }
-                2 -> {
-                    outputStride = 2
-                    outputOffset = pixelCount
-                }
-                else -> {
-                    // Image contains more than 3 planes, something strange is going on
-                    return@forEachIndexed
-                }
-            }
+        val uRowStride = uPlane.rowStride
+        val uPixelStride = uPlane.pixelStride
+        val uOffset = uPlane.bufferOffset
 
-            val buffer = plane.buffer
-            val rowStride = plane.rowStride
-            val pixelStride = plane.pixelStride
+        val vRowStride = vPlane.rowStride
+        val vPixelStride = vPlane.pixelStride
+        val vOffset = vPlane.bufferOffset
 
-            // We have to divide the width and height by two if it's not the Y plane
-            val planeCrop = if (planeIndex == 0) {
-                imageCrop
-            } else {
-                Rect(
-                    imageCrop.left / 2,
-                    imageCrop.top / 2,
-                    imageCrop.right / 2,
-                    imageCrop.bottom / 2
-                )
-            }
+        for (y in 0 until cropHeight) {
+            val srcY = cropTop + y
+            val chromaY = srcY shr 1
 
-            val planeWidth = planeCrop.width()
-            val planeHeight = planeCrop.height()
+            val yRowStart = yOffset + srcY * yRowStride
+            val uRowStart = uOffset + chromaY * uRowStride
+            val vRowStart = vOffset + chromaY * vRowStride
 
-            buffer.position(rowStride * planeCrop.top + pixelStride * planeCrop.left)
-            for (row in 0 until planeHeight) {
-                val length: Int
-                if (pixelStride == 1 && outputStride == 1) {
-                    // When there is a single stride value for pixel and output, we can just copy
-                    // the entire row in a single step
-                    length = planeWidth
-                    buffer.get(outputBuffer.array(), outputOffset, length)
-                    outputOffset += length
-                } else {
-                    // When either pixel or output have a stride > 1 we must copy pixel by pixel
-                    length = (planeWidth - 1) * pixelStride + 1
-                    buffer.get(rowData, 0, length)
-                    for (col in 0 until planeWidth) {
-                        outputBuffer.array()[outputOffset] = rowData[col * pixelStride]
-                        outputOffset += outputStride
-                    }
+            for (x in 0 until cropWidth) {
+                val srcX = cropLeft + x
+                val chromaX = srcX shr 1
+
+                val yIdx = yRowStart + srcX * yPixelStride
+                val uIdx = uRowStart + chromaX * uPixelStride
+                val vIdx = vRowStart + chromaX * vPixelStride
+
+                val yVal = yBuf.get(yIdx).toInt() and 0xFF
+                val uVal = uBuf.get(uIdx).toInt() and 0xFF
+                val vVal = vBuf.get(vIdx).toInt() and 0xFF
+
+                val argb = yuvToRgbPixel(yVal, uVal, vVal)
+
+                val destIndex = when (normalizedRotation) {
+                    90 -> x * outWidth + (cropHeight - 1 - y)
+                    180 -> (cropHeight - 1 - y) * outWidth + (cropWidth - 1 - x)
+                    270 -> (cropWidth - 1 - x) * outWidth + y
+                    else -> y * outWidth + x
                 }
 
-                if (row < planeHeight - 1) {
-                    buffer.position(buffer.position() + rowStride - length)
-                }
+                outArgb[destIndex] = argb
             }
         }
+    }
+}
+
+/**
+ * Reusable YUV to RGB converter compatible with API 23+ that avoids allocations in frame loops.
+ */
+class YuvToRgbConverter(context: Context? = null) {
+
+    private var argbBuffer: IntArray? = null
+    private var bufferWidth: Int = 0
+    private var bufferHeight: Int = 0
+
+    @Synchronized
+    fun yuvToRgb(image: Image, output: Bitmap, rotationDegrees: Int = 0) {
+        val crop = image.cropRect
+        val planes = image.planes
+        val planeData = Array(planes.size) { i ->
+            PlaneData(
+                buffer = planes[i].buffer,
+                rowStride = planes[i].rowStride,
+                pixelStride = planes[i].pixelStride,
+                bufferOffset = planes[i].buffer.position()
+            )
+        }
+        yuvToRgb(planeData, crop, output, rotationDegrees)
+    }
+
+    @Synchronized
+    fun yuvToRgb(
+        planes: Array<PlaneData>,
+        cropRect: Rect,
+        output: Bitmap,
+        rotationDegrees: Int = 0
+    ) {
+        require(planes.size >= 3) { "Image must have at least 3 planes" }
+        val cropWidth = cropRect.width()
+        val cropHeight = cropRect.height()
+        val normalizedRotation = ((rotationDegrees % 360) + 360) % 360
+        val outWidth = if (normalizedRotation == 90 || normalizedRotation == 270) cropHeight else cropWidth
+        val outHeight = if (normalizedRotation == 90 || normalizedRotation == 270) cropWidth else cropHeight
+
+        val requiredSize = outWidth * outHeight
+        if (argbBuffer == null || argbBuffer!!.size < requiredSize || bufferWidth != outWidth || bufferHeight != outHeight) {
+            argbBuffer = IntArray(requiredSize)
+            bufferWidth = outWidth
+            bufferHeight = outHeight
+        }
+
+        val buffer = argbBuffer!!
+        YuvMath.convertYuvToArgb(
+            yPlane = planes[0],
+            uPlane = planes[1],
+            vPlane = planes[2],
+            cropLeft = cropRect.left,
+            cropTop = cropRect.top,
+            cropRight = cropRect.right,
+            cropBottom = cropRect.bottom,
+            outArgb = buffer,
+            rotationDegrees = normalizedRotation
+        )
+
+        output.setPixels(buffer, 0, outWidth, 0, 0, outWidth, outHeight)
+    }
+
+    @Synchronized
+    fun release() {
+        argbBuffer = null
+        bufferWidth = 0
+        bufferHeight = 0
     }
 }

@@ -171,6 +171,12 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
     }
 
+    override fun onDestroy() {
+        cameraSource?.close()
+        cameraSource = null
+        super.onDestroy()
+    }
+
     // check if permission is granted or not.
     private fun isCameraPermissionGranted(): Boolean {
         return checkPermission(

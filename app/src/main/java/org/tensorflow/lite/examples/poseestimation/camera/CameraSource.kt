@@ -20,12 +20,12 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.ImageFormat
-import android.graphics.Matrix
 import android.graphics.Rect
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
+import android.media.Image
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
@@ -41,9 +41,10 @@ import org.tensorflow.lite.examples.poseestimation.ml.PoseClassifier
 import org.tensorflow.lite.examples.poseestimation.ml.PoseDetector
 import org.tensorflow.lite.examples.poseestimation.ml.TrackerType
 import java.util.*
+import java.util.concurrent.Executors
+import java.util.concurrent.ExecutorService
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
-import androidx.core.graphics.createBitmap
 
 class CameraSource(
     private val surfaceView: SurfaceView,
@@ -64,7 +65,10 @@ class CameraSource(
     private var classifier: PoseClassifier? = null
     private var isTrackerEnabled = false
     private var yuvConverter: YuvToRgbConverter = YuvToRgbConverter(surfaceView.context)
-    private lateinit var imageBitmap: Bitmap
+
+    private val frameQueue = FrameBackpressureQueue<Image>()
+    private val resourceManager = FrameResourceManager()
+    private var processingExecutor: ExecutorService? = null
 
     /** Frame count that have been processed so far in an one second interval to calculate FPS. */
     private var fpsTimer: Timer? = null
@@ -100,20 +104,7 @@ class CameraSource(
         imageReader?.setOnImageAvailableListener({ reader ->
             val image = reader.acquireLatestImage()
             if (image != null) {
-                if (!::imageBitmap.isInitialized) {
-                    imageBitmap = createBitmap(PREVIEW_WIDTH, PREVIEW_HEIGHT)
-                }
-                yuvConverter.yuvToRgb(image, imageBitmap)
-                // Create rotated version for portrait display
-                val rotateMatrix = Matrix()
-                rotateMatrix.postRotate(90.0f)
-
-                val rotatedBitmap = Bitmap.createBitmap(
-                    imageBitmap, 0, 0, PREVIEW_WIDTH, PREVIEW_HEIGHT,
-                    rotateMatrix, false
-                )
-                processImage(rotatedBitmap)
-                image.close()
+                handleIncomingImage(image)
             }
         }, imageReaderHandler)
 
@@ -126,6 +117,63 @@ class CameraSource(
             }
             cameraRequest?.build()?.let {
                 session?.setRepeatingRequest(it, null, null)
+            }
+        }
+    }
+
+    private fun handleIncomingImage(image: Image) {
+        when (frameQueue.offer(image)) {
+            FrameAction.PROCESS_NOW -> {
+                dispatchProcessFrame(image)
+            }
+            FrameAction.ENQUEUED_PENDING,
+            FrameAction.REPLACED_PENDING,
+            FrameAction.DISCARDED_CLOSED -> {
+                // Handled internally by queue
+            }
+        }
+    }
+
+    private fun dispatchProcessFrame(image: Image) {
+        val executor = processingExecutor
+        if (executor != null && !executor.isShutdown) {
+            executor.execute {
+                processImageFrame(image)
+            }
+        } else {
+            try {
+                image.close()
+            } catch (_: Throwable) {
+            }
+            frameQueue.onFrameCompleted()
+        }
+    }
+
+    private fun processImageFrame(image: Image) {
+        try {
+            if (resourceManager.acquire()) {
+                try {
+                    resourceManager.prepare(PREVIEW_WIDTH, PREVIEW_HEIGHT, 90)
+                    val rotatedBitmap = resourceManager.rotatedBitmap
+                    if (rotatedBitmap != null) {
+                        yuvConverter.yuvToRgb(image, rotatedBitmap, rotationDegrees = 90)
+                        processImage(rotatedBitmap)
+                    }
+                } finally {
+                    resourceManager.release()
+                }
+            }
+        } catch (e: Throwable) {
+            Log.e(TAG, "Exception during frame processing", e)
+        } finally {
+            try {
+                image.close()
+            } catch (_: Throwable) {
+            }
+
+            val nextImage = frameQueue.onFrameCompleted()
+            if (nextImage != null) {
+                dispatchProcessFrame(nextImage)
             }
         }
     }
@@ -202,6 +250,7 @@ class CameraSource(
     }
 
     fun resume() {
+        processingExecutor = Executors.newSingleThreadExecutor()
         imageReaderThread = HandlerThread("imageReaderThread").apply { start() }
         imageReaderHandler = Handler(imageReaderThread!!.looper)
         fpsTimer = Timer()
@@ -218,6 +267,7 @@ class CameraSource(
     }
 
     fun close() {
+        frameQueue.close()
         session?.close()
         session = null
         camera?.close()
@@ -225,6 +275,10 @@ class CameraSource(
         imageReader?.close()
         imageReader = null
         stopImageReaderThread()
+        processingExecutor?.shutdownNow()
+        processingExecutor = null
+        resourceManager.close()
+        yuvConverter.release()
         detector?.close()
         detector = null
         classifier?.close()
@@ -266,10 +320,12 @@ class CameraSource(
     }
 
     private fun visualize(persons: List<Person>, bitmap: Bitmap) {
-
+        val visBitmap = resourceManager.visualizationBitmap
         val outputBitmap = VisualizationUtils.drawBodyKeypoints(
             bitmap,
-            persons.filter { it.score > MIN_CONFIDENCE }, isTrackerEnabled
+            persons.filter { it.score > MIN_CONFIDENCE },
+            isTrackerEnabled,
+            visBitmap
         )
 
         val holder = surfaceView.holder

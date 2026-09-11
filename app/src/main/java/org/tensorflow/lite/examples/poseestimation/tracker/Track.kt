@@ -16,9 +16,40 @@ limitations under the License.
 
 package org.tensorflow.lite.examples.poseestimation.tracker
 
+import android.graphics.PointF
+import android.graphics.RectF
+import org.tensorflow.lite.examples.poseestimation.data.KeyPoint
 import org.tensorflow.lite.examples.poseestimation.data.Person
 
 data class Track(
     val person: Person,
-    val lastTimestamp: Long
-)
+    val lastTimestamp: Long,
+    val vx: Float = 0f,
+    val vy: Float = 0f,
+    val lastKeyPoints: List<KeyPoint> = person.keyPoints,
+    val prevTimestamp: Long = lastTimestamp,
+    val prevBoundingBox: RectF? = person.boundingBox
+) {
+    fun predictBoundingBox(timestamp: Long): RectF? {
+        val box = person.boundingBox ?: return null
+        val dt = timestamp - lastTimestamp
+        if (dt <= 0 || (vx == 0f && vy == 0f)) return box
+        val dx = (vx * dt).coerceIn(-1f, 1f)
+        val dy = (vy * dt).coerceIn(-1f, 1f)
+        return RectF(box.left + dx, box.top + dy, box.right + dx, box.bottom + dy)
+    }
+
+    fun predictKeyPoints(timestamp: Long): List<KeyPoint> {
+        val dt = timestamp - lastTimestamp
+        if (dt <= 0 || (vx == 0f && vy == 0f)) return person.keyPoints
+        val dx = (vx * dt).coerceIn(-1f, 1f)
+        val dy = (vy * dt).coerceIn(-1f, 1f)
+        return person.keyPoints.map { kp ->
+            KeyPoint(
+                bodyPart = kp.bodyPart,
+                coordinate = PointF(kp.coordinate.x + dx, kp.coordinate.y + dy),
+                score = kp.score
+            )
+        }
+    }
+}
