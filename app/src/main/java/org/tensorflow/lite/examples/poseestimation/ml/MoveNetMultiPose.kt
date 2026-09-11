@@ -222,7 +222,8 @@ class MoveNetMultiPose(
             return persons
         } else {
             val trackPersons = mutableListOf<Person>()
-            tracker?.apply(persons, System.currentTimeMillis() * 1000)?.forEach {
+            val monotonicTimestampMicros = SystemClock.elapsedRealtimeNanos() / 1000
+            tracker?.apply(persons, monotonicTimestampMicros)?.forEach {
                 val resizeKeyPoint = mutableListOf<KeyPoint>()
                 it.keyPoints.forEach { key ->
                     resizeKeyPoint.add(
