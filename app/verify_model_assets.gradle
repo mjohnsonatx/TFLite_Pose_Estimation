@@ -1,0 +1,44 @@
+def modelAssetChecksums = [
+    "classifier.tflite"             : "5e3946505789c0e317bf9d9e2d93e8364bda0239e75b05e7ac5d2cca5beb85c7",
+    "movenet_lightning.tflite"      : "0fac2226112d0371903ca86e3853cec24ef603a0b2f96f589b180f0ebdd135ab",
+    "movenet_multipose_fp16.tflite" : "d4489f89e6bd6777a8b9a1a16189832131f84ff90d82fae729e670b84d7948dd",
+    "movenet_thunder.tflite"        : "41641538679ec79b07d4101e591dda47d098c09af29607674b2a40b8a3798dd3",
+    "posenet.tflite"                : "7bcc1efa3010de45640406a4ce0acc2ef89a742021f11adacdca2fd6e494fa07"
+]
+
+def modelAssets = modelAssetChecksums.collectEntries { name, checksum ->
+    [(layout.projectDirectory.file("src/main/assets/${name}")): checksum]
+}
+
+tasks.register("verifyModelAssets") {
+    group = "verification"
+    description = "Verifies that bundled pose-estimation models are present and unmodified."
+    inputs.files(modelAssets.keySet())
+
+    doLast {
+        modelAssets.each { modelFile, expectedChecksum ->
+            def file = modelFile.asFile
+            if (!file.isFile()) {
+                throw new GradleException("Required bundled model is missing: ${file}")
+            }
+
+            def digest = java.security.MessageDigest.getInstance("SHA-256")
+            file.withInputStream { stream ->
+                byte[] buffer = new byte[8192]
+                for (int count = stream.read(buffer); count != -1; count = stream.read(buffer)) {
+                    digest.update(buffer, 0, count)
+                }
+            }
+            def actualChecksum = digest.digest().encodeHex().toString()
+            if (actualChecksum != expectedChecksum) {
+                throw new GradleException(
+                    "Checksum mismatch for ${file.name}: expected ${expectedChecksum}, got ${actualChecksum}"
+                )
+            }
+        }
+    }
+}
+
+tasks.named("preBuild").configure {
+    dependsOn("verifyModelAssets")
+}

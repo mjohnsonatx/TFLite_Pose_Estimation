@@ -1,0 +1,26 @@
+# Gradle and Kotlin local state
+.gradle/
+.kotlin/
+.buildcache/
+**/build/
+
+# Android Studio and local SDK configuration
+.idea/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Local agent configuration
+.agents/
+.codex/
+
+# Signing material and generated packages
+*.jks
+*.keystore
+keystore.properties
+*.apk
+*.aab
+
+# OS metadata
+.DS_Store

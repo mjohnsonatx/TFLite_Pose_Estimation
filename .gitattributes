@@ -1,0 +1,6 @@
+*.tflite binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+gradlew text eol=lf
+*.bat text eol=crlf
