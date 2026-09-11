@@ -290,6 +290,7 @@ class MoveNetMultiPose(
 
     override fun lastInferenceTimeNanos(): Long = lastInferenceTimeNanos
 
+
     /**
      * Close all resources when not in use.
      */
