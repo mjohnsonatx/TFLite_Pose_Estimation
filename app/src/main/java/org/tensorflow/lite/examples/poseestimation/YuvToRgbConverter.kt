@@ -120,6 +120,7 @@ class YuvToRgbConverter(context: Context) {
                 )
             }
 
+
             val planeWidth = planeCrop.width()
             val planeHeight = planeCrop.height()
 
