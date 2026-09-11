@@ -171,6 +171,18 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
     }
 
+    /**
+     * Belt and braces teardown.
+     *
+     * [onPause] already releases the pipeline, but a configuration change or a process death that
+     * skips it must not leave the reusable bitmap, pixel buffer and interpreters behind.
+     */
+    override fun onDestroy() {
+        cameraSource?.close()
+        cameraSource = null
+        super.onDestroy()
+    }
+
     // check if permission is granted or not.
     private fun isCameraPermissionGranted(): Boolean {
         return checkPermission(

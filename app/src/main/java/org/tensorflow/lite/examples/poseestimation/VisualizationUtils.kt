@@ -59,31 +59,62 @@ object VisualizationUtils {
         Pair(BodyPart.RIGHT_KNEE, BodyPart.RIGHT_ANKLE)
     )
 
+    /**
+     * Paints are immutable for the lifetime of the process, so they are created once instead of
+     * three times per frame.
+     */
+    private val paintCircle = Paint().apply {
+        strokeWidth = CIRCLE_RADIUS
+        color = Color.RED
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+
+    private val paintLine = Paint().apply {
+        strokeWidth = LINE_WIDTH
+        color = Color.RED
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
+
+    private val paintText = Paint().apply {
+        textSize = PERSON_ID_TEXT_SIZE
+        color = Color.BLUE
+        textAlign = Paint.Align.LEFT
+        isAntiAlias = true
+    }
+
+    /**
+     * Draws the skeletons onto [input] itself.
+     *
+     * The camera pipeline owns a single reusable bitmap that is fully rewritten by every frame, so
+     * there is nothing to preserve and no reason to allocate a copy. Use this overload on the frame
+     * path; use [drawBodyKeypoints] when the caller's bitmap must stay untouched.
+     */
+    fun drawBodyKeypointsInPlace(
+        input: Bitmap,
+        persons: List<Person>,
+        isTrackerEnabled: Boolean = false
+    ) {
+        draw(Canvas(input), persons, isTrackerEnabled)
+    }
+
     // Draw line and point indicate body pose
     fun drawBodyKeypoints(
         input: Bitmap,
         persons: List<Person>,
         isTrackerEnabled: Boolean = false
     ): Bitmap {
-        val paintCircle = Paint().apply {
-            strokeWidth = CIRCLE_RADIUS
-            color = Color.RED
-            style = Paint.Style.FILL
-        }
-        val paintLine = Paint().apply {
-            strokeWidth = LINE_WIDTH
-            color = Color.RED
-            style = Paint.Style.STROKE
-        }
-
-        val paintText = Paint().apply {
-            textSize = PERSON_ID_TEXT_SIZE
-            color = Color.BLUE
-            textAlign = Paint.Align.LEFT
-        }
-
         val output = input.copy(Bitmap.Config.ARGB_8888, true)
-        val originalSizeCanvas = Canvas(output)
+        draw(Canvas(output), persons, isTrackerEnabled)
+        return output
+    }
+
+    private fun draw(
+        originalSizeCanvas: Canvas,
+        persons: List<Person>,
+        isTrackerEnabled: Boolean
+    ) {
         persons.forEach { person ->
             // draw person id if tracker is enable
             if (isTrackerEnabled) {
@@ -115,6 +146,5 @@ object VisualizationUtils {
                 )
             }
         }
-        return output
     }
 }

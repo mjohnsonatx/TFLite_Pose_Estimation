@@ -27,6 +27,15 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+
+    testOptions {
+        unitTests {
+            // The local JVM tests cover the framework independent imaging, assignment and tracking
+            // components, so they never touch a stubbed android.jar method. Failing loudly if one
+            // ever does is better than silently returning a default value.
+            returnDefaultValues = false
+        }
+    }
 }
 
 // Model files are checked into src/main/assets so builds never require network access.
@@ -42,6 +51,9 @@ dependencies {
     implementation 'com.google.ai.edge.litert:litert:1.4.2'
     implementation 'com.google.ai.edge.litert:litert-gpu:1.4.2'
     implementation 'com.google.ai.edge.litert:litert-support-api:1.4.2'
+
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation "com.google.truth:truth:1.1.3"
 
     androidTestImplementation 'androidx.test.ext:junit:1.1.2'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.3.0'

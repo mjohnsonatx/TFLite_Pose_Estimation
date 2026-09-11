@@ -18,6 +18,12 @@ package org.tensorflow.lite.examples.poseestimation.tracker
 
 import org.tensorflow.lite.examples.poseestimation.data.Person
 
+/**
+ * Android facing projection of a live [TrackRecord].
+ *
+ * @param person the most recent detection linked with this track, carrying the track id.
+ * @param lastTimestamp microseconds of that observation, from a monotonic clock.
+ */
 data class Track(
     val person: Person,
     val lastTimestamp: Long
