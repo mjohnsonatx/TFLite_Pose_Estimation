@@ -38,10 +38,17 @@ import org.tensorflow.lite.support.image.ops.ResizeWithCropOrPadOp
 import org.tensorflow.lite.support.tensorbuffer.TensorBuffer
 import kotlin.math.ceil
 
+/**
+ * @param trackingClockMicros source of the timestamps handed to the tracker. It must be monotonic:
+ * `System.currentTimeMillis()` jumps whenever the wall clock is corrected or the timezone changes,
+ * which would either expire every track at once or freeze ageing entirely. `elapsedRealtimeNanos`
+ * also keeps counting while the device is asleep, so a track cannot survive a suspend.
+ */
 class MoveNetMultiPose(
     private val interpreter: Interpreter,
     private val type: Type,
     private val gpuDelegate: GpuDelegate?,
+    private val trackingClockMicros: () -> Long = { SystemClock.elapsedRealtimeNanos() / 1_000L },
 ) : PoseDetector {
     private val outputShape = interpreter.getOutputTensor(0).shape()
     private val inputShape = interpreter.getInputTensor(0).shape()
@@ -211,7 +218,13 @@ class MoveNetMultiPose(
             )
         }
 
-        if (persons.isEmpty()) return emptyList()
+        if (persons.isEmpty()) {
+            // An empty frame is still information: it ages every track. Without this a person who
+            // steps out of view would keep a frozen, permanently young track and could later be
+            // matched against a stale pose.
+            tracker?.apply(persons, trackingClockMicros())
+            return emptyList()
+        }
 
         if (tracker == null) {
             persons.forEach {
@@ -222,7 +235,7 @@ class MoveNetMultiPose(
             return persons
         } else {
             val trackPersons = mutableListOf<Person>()
-            tracker?.apply(persons, System.currentTimeMillis() * 1000)?.forEach {
+            tracker?.apply(persons, trackingClockMicros())?.forEach {
                 val resizeKeyPoint = mutableListOf<KeyPoint>()
                 it.keyPoints.forEach { key ->
                     resizeKeyPoint.add(
